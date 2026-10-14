@@ -40,17 +40,61 @@ async function updateStatus() {
     if (!result?.ok) throw new Error(result?.error || "Could not read capture status.");
     const capture = result.capture;
 
-    downloadButton.hidden = capture?.status !== "complete";
-    cancelButton.hidden = capture?.status !== "armed";
-    captureButton.disabled = !activeTabIsKhan;
+    const autoProgress = capture?.autoProgress || {};
+    const readyToFinish = capture?.status === "collecting" && autoProgress.done === true;
+    downloadButton.hidden = capture?.status !== "complete" && !readyToFinish;
+    downloadButton.textContent = capture?.status === "complete" ? "Download captured JSON" : "Finish and download JSON";
+    cancelButton.hidden = !["armed", "collecting"].includes(capture?.status);
+    captureButton.disabled = !activeTabIsKhan || ["armed", "collecting"].includes(capture?.status);
 
     if (!activeTabIsKhan) {
       setStatus("Open a Khan Academy classroom Activity Overview page to start capture.");
     } else if (capture?.status === "armed") {
       setStatus("Capture is armed. The page is refreshing; wait for its activity report to load.");
+    } else if (capture?.status === "collecting") {
+      const studentCount = capture.data.response.data.teacherOverviewByStudentReport.rows.length;
+      const courseReportCount = (capture.expandedStudentReports || []).length;
+      const skillReportCount = (capture.expandedCourseReports || []).length;
+      if (!autoProgress.done) {
+        const current = autoProgress.current ? ` Opening ${autoProgress.current}.` : "";
+        setStatus(
+          `Class overview captured (${new Intl.NumberFormat().format(studentCount)} students). `
+          + `Automatically captured ${new Intl.NumberFormat().format(courseReportCount)} student cards and `
+          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns so far.`
+          + current
+        );
+      } else if (autoProgress.error) {
+        setStatus(
+          `Automatic expansion stopped: ${autoProgress.error} `
+          + `${new Intl.NumberFormat().format(courseReportCount)} student reports and `
+          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns are available to download.`
+        );
+      } else if (autoProgress.failed) {
+        setStatus(
+          `Automatic expansion finished: ${new Intl.NumberFormat().format(courseReportCount)} student reports and `
+          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns captured; `
+          + `${new Intl.NumberFormat().format(autoProgress.failed)} rows could not be captured. You can download the available data.`
+        );
+      } else {
+        setStatus(
+          `Automatic expansion finished: ${new Intl.NumberFormat().format(courseReportCount)} student reports and `
+          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns captured.`
+        );
+      }
     } else if (capture?.status === "complete") {
       const count = capture.data.response.data.teacherOverviewByStudentReport.rows.length;
-      setStatus(`Capture complete: ${new Intl.NumberFormat().format(count)} student rows are ready to download.`);
+      const courseCount = (capture.expandedStudentReports || []).length;
+      const skillCount = (capture.expandedCourseReports || []).length;
+      const summary = `Capture complete: ${new Intl.NumberFormat().format(count)} class rows, `
+        + `${new Intl.NumberFormat().format(courseCount)} student reports, and `
+        + `${new Intl.NumberFormat().format(skillCount)} course breakdowns are ready.`;
+      if (autoProgress.error) {
+        setStatus(`${summary} Automatic expansion stopped early: ${autoProgress.error}`);
+      } else if (autoProgress.failed) {
+        setStatus(`${summary} ${new Intl.NumberFormat().format(autoProgress.failed)} details could not be captured.`);
+      } else {
+        setStatus(summary);
+      }
     } else {
       setStatus("Ready to capture. Start when the Activity Overview is open.");
     }
@@ -76,27 +120,38 @@ captureButton.addEventListener("click", async () => {
   }
 });
 
+async function downloadData(data) {
+  const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], {
+    type: "application/json;charset=utf-8"
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    await chrome.downloads.download({
+      url: objectUrl,
+      filename: "khan-activity-export.json",
+      saveAs: true
+    });
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+}
+
 downloadButton.addEventListener("click", async () => {
   downloadButton.disabled = true;
   try {
-    const result = await send({ type: "capture:export", tabId: activeTabId });
-    if (!result?.ok) throw new Error(result?.error || "No captured data is available.");
-    const blob = new Blob([`${JSON.stringify(result.data, null, 2)}\n`], {
-      type: "application/json;charset=utf-8"
+    const statusResult = await send({ type: "capture:status", tabId: activeTabId });
+    if (!statusResult?.ok) throw new Error(statusResult?.error || "Could not read capture status.");
+    const result = await send({
+      type: statusResult.capture?.status === "collecting" ? "capture:finish" : "capture:export",
+      tabId: activeTabId
     });
-    const objectUrl = URL.createObjectURL(blob);
-    try {
-      await chrome.downloads.download({
-        url: objectUrl,
-        filename: "khan-activity-export.json",
-        saveAs: true
-      });
-    } catch (error) {
-      URL.revokeObjectURL(objectUrl);
-      throw error;
-    }
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-    setStatus("Download started. The JSON can be opened in Class Activity Explorer.");
+    if (!result?.ok) throw new Error(result?.error || "No captured data is available.");
+    await downloadData(result.data);
+    setStatus(
+      `Download started with ${new Intl.NumberFormat().format(result.courseReportCount || 0)} student course reports.`
+    );
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Could not download captured data.", true);
   } finally {

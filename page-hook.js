@@ -2,15 +2,17 @@
 
 (() => {
   const CHANNEL = "khan-classroom-activity-capture-v1";
-  const OPERATION = "GetProgressByStudent";
+  const SUMMARY_OPERATION = "GetProgressByStudent";
+  const COURSE_OPERATION = "GetProgressByCourseForStudent";
+  const SKILL_OPERATION = "GetProgressBySkillForStudentForCourse";
   let armed = false;
-  let delivered = false;
+  let summaryDelivered = false;
 
   function requestPayloadFromText(text) {
     if (typeof text !== "string") return null;
     try {
       const value = JSON.parse(text);
-      return value?.operationName === OPERATION ? value : null;
+      return [SUMMARY_OPERATION, COURSE_OPERATION, SKILL_OPERATION].includes(value?.operationName) ? value : null;
     } catch {
       return null;
     }
@@ -27,14 +29,24 @@
   }
 
   function publish(request, response) {
-    if (!armed || delivered || !response?.data?.teacherOverviewByStudentReport) return;
-    delivered = true;
-    armed = false;
+    if (!armed) return;
+    const isSummary = request.operationName === SUMMARY_OPERATION
+      && response?.data?.teacherOverviewByStudentReport;
+    const isCourseReport = request.operationName === COURSE_OPERATION
+      && response?.data?.teacherOverviewByCourseForStudentReport
+      && typeof request.variables?.studentKaid === "string";
+    const isSkillReport = request.operationName === SKILL_OPERATION
+      && response?.data?.teacherOverviewBySkillForStudentForCourseReport
+      && typeof request.variables?.studentKaid === "string"
+      && typeof request.variables?.courseId === "string";
+    if (isSummary && summaryDelivered) return;
+    if (!isSummary && !isCourseReport && !isSkillReport) return;
+    if (isSummary) summaryDelivered = true;
     window.postMessage({
       channel: CHANNEL,
       type: "capture:page-data",
       data: {
-        operationName: OPERATION,
+        operationName: request.operationName,
         requestVariables: request.variables || {},
         response
       }
@@ -73,7 +85,7 @@
     xhrRequests.set(xhr, requestPayloadFromText(typeof body === "string" ? body : ""));
     xhr.addEventListener("load", function() {
       const payload = xhrRequests.get(xhr);
-      if (!payload || !armed || delivered || xhr.status < 200 || xhr.status >= 300) return;
+      if (!payload || !armed || xhr.status < 200 || xhr.status >= 300) return;
       let response;
       try {
         response = xhr.responseType === "json" ? xhr.response : JSON.parse(xhr.responseText);
@@ -89,7 +101,7 @@
     if (event.source !== window || event.origin !== location.origin || event.data?.channel !== CHANNEL) return;
     if (event.data.type === "capture:arm") {
       armed = true;
-      delivered = false;
+      summaryDelivered = false;
     } else if (event.data.type === "capture:stop") {
       armed = false;
     }
