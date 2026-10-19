@@ -4,6 +4,11 @@ const OPERATION = "GetProgressByStudent";
 const COURSE_OPERATION = "GetProgressByCourseForStudent";
 const SKILL_OPERATION = "GetProgressBySkillForStudentForCourse";
 const CAPTURE_PREFIX = "capture:";
+const DEFAULT_CAPTURE_MODE = "summary";
+
+function normalizeCaptureMode(value) {
+  return value === "full" ? "full" : DEFAULT_CAPTURE_MODE;
+}
 
 function captureKey(tabId) {
   return `${CAPTURE_PREFIX}${tabId}`;
@@ -108,10 +113,14 @@ async function decompressReports(reports) {
 }
 
 async function exportData(capture) {
-  const [expandedStudentReports, expandedCourseReports] = await Promise.all([
-    decompressReports(capture.expandedStudentReports),
-    decompressReports(capture.expandedCourseReports)
-  ]);
+  const expandedStudentReports = await decompressReports(capture.expandedStudentReports);
+  if (normalizeCaptureMode(capture.mode) !== "full") {
+    return {
+      ...capture.data,
+      expandedStudentReports
+    };
+  }
+  const expandedCourseReports = await decompressReports(capture.expandedCourseReports);
   return {
     ...capture.data,
     expandedStudentReports,
@@ -145,6 +154,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       return setCapture(tabId, {
         status: "armed",
+        mode: normalizeCaptureMode(message.mode),
         startedAt: new Date().toISOString(),
         data: null,
         expandedStudentReports: [],
@@ -244,6 +254,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const collecting = {
           ...capture,
           status: "collecting",
+          mode: normalizeCaptureMode(capture.mode),
           data: message.data,
           expandedStudentReports: [],
           expandedCourseReports: [],
@@ -259,6 +270,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({
           ok: true,
           status: collecting.status,
+          mode: collecting.mode,
           students: studentsToExpand(message.data),
           courseReportCount: 0
         });
@@ -270,6 +282,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (validSkillReport) {
+        if (normalizeCaptureMode(capture.mode) !== "full") {
+          sendResponse({ ok: true, status: capture.status, ignored: true });
+          return;
+        }
         const reports = capture.expandedCourseReports || [];
         const report = {
           studentKaid: message.data.requestVariables.studentKaid,
@@ -305,7 +321,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (existingIndex === -1) reports.push(report);
       else reports[existingIndex] = report;
       await setCapture(tabId, { ...capture, expandedStudentReports: reports });
-      const courses = coursesToExpand(message.data);
+      const courses = normalizeCaptureMode(capture.mode) === "full" ? coursesToExpand(message.data) : [];
       chrome.tabs.sendMessage(tabId, {
         type: "capture:course-captured",
         studentKaid: message.data.requestVariables.studentKaid,

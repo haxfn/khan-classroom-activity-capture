@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Khan Classroom Activity Capture",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Capture the Activity Overview data from your current Khan Academy page for local export.",
   "permissions": [
     "activeTab",

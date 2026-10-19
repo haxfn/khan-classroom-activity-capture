@@ -4,6 +4,14 @@ const statusNode = document.querySelector("#status");
 const captureButton = document.querySelector("#capture");
 const downloadButton = document.querySelector("#download");
 const cancelButton = document.querySelector("#cancel");
+const detailRadios = [...document.querySelectorAll("input[name=\"capture-mode\"]")];
+
+function selectedCaptureMode() {
+  for (const radio of detailRadios) {
+    if (radio.checked) return radio.value === "full" ? "full" : "summary";
+  }
+  return "summary";
+}
 
 let activeTabId = null;
 let activeTabIsKhan = false;
@@ -39,6 +47,12 @@ async function updateStatus() {
     const result = await send({ type: "capture:status", tabId: activeTabId });
     if (!result?.ok) throw new Error(result?.error || "Could not read capture status.");
     const capture = result.capture;
+    const isFullCapture = (capture?.mode || "summary") === "full";
+    const captureInProgress = ["armed", "collecting"].includes(capture?.status);
+    for (const radio of detailRadios) {
+      radio.disabled = captureInProgress;
+      if (captureInProgress) radio.checked = radio.value === (capture?.mode || "summary");
+    }
 
     const autoProgress = capture?.autoProgress || {};
     const readyToFinish = capture?.status === "collecting" && autoProgress.done === true;
@@ -55,39 +69,44 @@ async function updateStatus() {
       const studentCount = capture.data.response.data.teacherOverviewByStudentReport.rows.length;
       const courseReportCount = (capture.expandedStudentReports || []).length;
       const skillReportCount = (capture.expandedCourseReports || []).length;
+      const capturedSoFar = isFullCapture
+        ? `${new Intl.NumberFormat().format(courseReportCount)} student cards and `
+          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns`
+        : `${new Intl.NumberFormat().format(courseReportCount)} student course reports`;
+      const reportList = isFullCapture
+        ? `${new Intl.NumberFormat().format(courseReportCount)} student reports and `
+          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns`
+        : `${new Intl.NumberFormat().format(courseReportCount)} student course reports`;
       if (!autoProgress.done) {
         const current = autoProgress.current ? ` Opening ${autoProgress.current}.` : "";
         setStatus(
           `Class overview captured (${new Intl.NumberFormat().format(studentCount)} students). `
-          + `Automatically captured ${new Intl.NumberFormat().format(courseReportCount)} student cards and `
-          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns so far.`
+          + `Automatically captured ${capturedSoFar} so far.`
           + current
         );
       } else if (autoProgress.error) {
         setStatus(
           `Automatic expansion stopped: ${autoProgress.error} `
-          + `${new Intl.NumberFormat().format(courseReportCount)} student reports and `
-          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns are available to download.`
+          + `${reportList} are available to download.`
         );
       } else if (autoProgress.failed) {
         setStatus(
-          `Automatic expansion finished: ${new Intl.NumberFormat().format(courseReportCount)} student reports and `
-          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns captured; `
+          `Automatic expansion finished: ${reportList} captured; `
           + `${new Intl.NumberFormat().format(autoProgress.failed)} rows could not be captured. You can download the available data.`
         );
       } else {
-        setStatus(
-          `Automatic expansion finished: ${new Intl.NumberFormat().format(courseReportCount)} student reports and `
-          + `${new Intl.NumberFormat().format(skillReportCount)} course breakdowns captured.`
-        );
+        setStatus(`Automatic expansion finished: ${reportList} captured.`);
       }
     } else if (capture?.status === "complete") {
       const count = capture.data.response.data.teacherOverviewByStudentReport.rows.length;
       const courseCount = (capture.expandedStudentReports || []).length;
       const skillCount = (capture.expandedCourseReports || []).length;
-      const summary = `Capture complete: ${new Intl.NumberFormat().format(count)} class rows, `
-        + `${new Intl.NumberFormat().format(courseCount)} student reports, and `
-        + `${new Intl.NumberFormat().format(skillCount)} course breakdowns are ready.`;
+      const summary = isFullCapture
+        ? `Capture complete: ${new Intl.NumberFormat().format(count)} class rows, `
+          + `${new Intl.NumberFormat().format(courseCount)} student reports, and `
+          + `${new Intl.NumberFormat().format(skillCount)} course breakdowns are ready.`
+        : `Capture complete: ${new Intl.NumberFormat().format(count)} class rows and `
+          + `${new Intl.NumberFormat().format(courseCount)} student course reports are ready.`;
       if (autoProgress.error) {
         setStatus(`${summary} Automatic expansion stopped early: ${autoProgress.error}`);
       } else if (autoProgress.failed) {
@@ -110,7 +129,7 @@ captureButton.addEventListener("click", async () => {
   try {
     if (activeTabId === null) await getCurrentTab();
     if (!activeTabIsKhan) throw new Error("Open a Khan Academy classroom Activity Overview page first.");
-    const result = await send({ type: "capture:arm", tabId: activeTabId });
+    const result = await send({ type: "capture:arm", tabId: activeTabId, mode: selectedCaptureMode() });
     if (!result?.ok) throw new Error(result?.error || "Could not start capture.");
     await chrome.tabs.reload(activeTabId);
     await updateStatus();
